@@ -1,0 +1,280 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// =====================================
+// KONFIGURASI WIFI
+// =====================================
+const char* ssid = "MR-FK-01";
+const char* password = "adzanmasjid";
+
+// API KEY THINGSPEAK
+String apiKey = "API_WRITE_KEY";
+
+// =====================================
+// KONFIGURASI PIN SENSOR
+// =====================================
+#define PIN_MQ2 34
+#define PIN_MQ135 35
+
+// =====================================
+// KONFIGURASI PIN LED
+// =====================================
+#define LED_MERAH 25
+#define LED_HIJAU 26
+
+// =====================================
+// BATAS NILAI SENSOR
+// =====================================
+int batasMQ2 = 1800;
+int batasMQ135 = 1800;
+
+// =====================================
+// KONFIGURASI WAKTU
+// =====================================
+unsigned long waktuSebelumnya = 0;
+unsigned long waktuReconnect = 0;
+
+const unsigned long intervalKirim = 20000;
+const unsigned long intervalReconnect = 10000;
+
+// =====================================
+// FUNGSI KONEKSI WIFI
+// =====================================
+void koneksiWiFi() {
+
+  Serial.println();
+  Serial.println("Menghubungkan ke WiFi...");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+
+  WiFi.begin(ssid, password);
+
+  unsigned long mulaiKoneksi = millis();
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - mulaiKoneksi < 15000) {
+
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("WiFi BERHASIL TERHUBUNG!");
+
+    Serial.print("SSID       : ");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("IP Address : ");
+    Serial.println(WiFi.localIP());
+
+    Serial.print("MAC Address: ");
+    Serial.println(WiFi.macAddress());
+
+  } else {
+
+    Serial.println("WiFi GAGAL TERHUBUNG!");
+    Serial.println("ESP32 tetap menjalankan sensor.");
+  }
+}
+
+// =====================================
+// FUNGSI MEMERIKSA WIFI
+// =====================================
+void periksaWiFi() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    if (millis() - waktuReconnect >= intervalReconnect) {
+
+      waktuReconnect = millis();
+
+      Serial.println();
+      Serial.println("WiFi terputus!");
+      Serial.println("Mencoba menghubungkan ulang...");
+
+      WiFi.disconnect();
+      delay(100);
+
+      WiFi.begin(ssid, password);
+    }
+
+  } else {
+
+    static bool sebelumnyaTerhubung = false;
+
+    if (!sebelumnyaTerhubung) {
+
+      Serial.println();
+      Serial.println("WiFi berhasil terhubung kembali!");
+
+      Serial.print("IP Address: ");
+      Serial.println(WiFi.localIP());
+
+      sebelumnyaTerhubung = true;
+    }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    static bool statusSebelumnya = false;
+    statusSebelumnya = false;
+  }
+}
+
+// =====================================
+// FUNGSI KIRIM DATA THINGSPEAK
+// =====================================
+void kirimData(int mq2, int mq135) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("Data tidak dikirim: WiFi belum terhubung.");
+    return;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+
+  String url = "http://api.thingspeak.com/update?api_key="
+               + apiKey
+               + "&field1=" + String(mq2)
+               + "&field2=" + String(mq135);
+
+  http.setTimeout(5000);
+
+  if (http.begin(client, url)) {
+
+    Serial.println();
+    Serial.println("Mengirim data ke ThingSpeak...");
+
+    int kodeHTTP = http.GET();
+
+    if (kodeHTTP > 0) {
+
+      Serial.print("Kode HTTP: ");
+      Serial.println(kodeHTTP);
+
+      String respons = http.getString();
+
+      Serial.print("Respons ThingSpeak: ");
+      Serial.println(respons);
+
+      if (respons.toInt() > 0) {
+        Serial.println("Data berhasil dikirim!");
+      } else {
+        Serial.println("Data gagal disimpan di ThingSpeak.");
+      }
+
+    } else {
+
+      Serial.print("Gagal mengirim data: ");
+      Serial.println(http.errorToString(kodeHTTP));
+    }
+
+    http.end();
+
+  } else {
+
+    Serial.println("Gagal memulai koneksi HTTP!");
+  }
+}
+
+// =====================================
+// SETUP
+// =====================================
+void setup() {
+
+  Serial.begin(115200);
+
+  // Konfigurasi LED
+  pinMode(LED_MERAH, OUTPUT);
+  pinMode(LED_HIJAU, OUTPUT);
+
+  digitalWrite(LED_MERAH, LOW);
+  digitalWrite(LED_HIJAU, LOW);
+
+  // Resolusi ADC ESP32
+  analogReadResolution(12);
+
+  // Menghubungkan WiFi
+  koneksiWiFi();
+
+  // Supaya percobaan reconnect berikutnya
+  // mengikuti interval yang ditentukan
+  waktuReconnect = millis();
+  waktuSebelumnya = millis();
+
+  Serial.println();
+  Serial.println("SISTEM MONITORING KUALITAS UDARA");
+  Serial.println("Sistem siap berjalan.");
+}
+
+// =====================================
+// LOOP
+// =====================================
+void loop() {
+
+  // Memeriksa koneksi WiFi
+  periksaWiFi();
+
+  // Membaca sensor MQ-2 dan MQ-135
+  int nilaiMQ2 = analogRead(PIN_MQ2);
+  int nilaiMQ135 = analogRead(PIN_MQ135);
+
+  // Menampilkan hasil pembacaan
+  Serial.println();
+  Serial.println("================================");
+
+  Serial.print("Nilai MQ-2   : ");
+  Serial.println(nilaiMQ2);
+
+  Serial.print("Nilai MQ-135 : ");
+  Serial.println(nilaiMQ135);
+
+  // =================================
+  // MENENTUKAN KONDISI UDARA
+  // =================================
+  if (nilaiMQ2 >= batasMQ2 ||
+      nilaiMQ135 >= batasMQ135) {
+
+    Serial.println("Kondisi Udara: WASPADA");
+
+    digitalWrite(LED_MERAH, HIGH);
+    digitalWrite(LED_HIJAU, LOW);
+
+  } else {
+
+    Serial.println("Kondisi Udara: NORMAL");
+
+    digitalWrite(LED_MERAH, LOW);
+    digitalWrite(LED_HIJAU, HIGH);
+  }
+
+  // =================================
+  // STATUS WIFI
+  // =================================
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("Status WiFi: TERHUBUNG");
+
+  } else {
+
+    Serial.println("Status WiFi: TERPUTUS");
+  }
+
+  // =================================
+  // PENGIRIMAN DATA SETIAP 20 DETIK
+  // =================================
+  if (millis() - waktuSebelumnya >= intervalKirim) {
+
+    waktuSebelumnya = millis();
+
+    kirimData(nilaiMQ2, nilaiMQ135);
+  }
+
+  delay(2000);
+}
